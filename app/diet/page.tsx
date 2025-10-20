@@ -223,6 +223,23 @@ export default function DietPage() {
 	};
 	// --- end CSV helper ---
 
+	// --- added: helpers to read/format issue fields ---
+	const readField = (obj: any, key: string) => {
+		if (!obj) return undefined;
+		// try exact, lowercase, and camelCase
+		return obj[key] ?? obj[key.toLowerCase()] ?? obj[key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+	};
+
+	const formatIssues = (v: any) => {
+		const iw = readField(v, 'issue_w');
+		const im = readField(v, 'issue_m');
+		const parts: string[] = [];
+		if (iw != null && String(iw).trim() !== '') parts.push(`w:${iw}`);
+		if (im != null && String(im).trim() !== '') parts.push(`m:${im}`);
+		return parts.length ? parts.join(' | ') : null;
+	};
+	// --- end helpers ---
+
 	return (
 		<div>
 			<h1>Diet — Nutrient Totals</h1>
@@ -288,11 +305,16 @@ export default function DietPage() {
 				<ul>
 					{Object.entries(nutrsTotals)
 						.filter(([k, v]) => ALLOWED_NUTR_IDS.has(Number(v?.NutrientID)))
-						.map(([k, v]) => (
-							<li key={k}>
-								{k}: {v['NutrientName']} : {v["total"]}
-							</li>
-						))}
+						.map(([k, v]) => {
+							const issues = formatIssues(v);
+							return (
+								<li key={k}>
+									{k}: {v['NutrientName']} : {v['total']}
+									{/* show issue info if present */}
+									{issues && <small className="text-red-600 ml-2">[{issues}]</small>}
+								</li>
+							);
+						})}
 				</ul>
 			)}
 
