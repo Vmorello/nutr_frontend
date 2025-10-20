@@ -196,7 +196,7 @@ export default function DietPage() {
 					.filter((v): v is string | number => typeof v === 'string' || typeof v === 'number')
 					.map(String);
 
-				let nameMap: Record<string, string> = {};
+				const nameMap: Record<string, string> = {};
 
 				if (ids.length > 0) {
 					const { data: namesData, error: namesError } = await supabase
@@ -390,7 +390,7 @@ export default function DietPage() {
 			{nutrsTotals && (
 				<ul>
 					{Object.entries(nutrsTotals)
-						.filter(([k, v]) => ALLOWED_NUTR_IDS.has(Number(v?.NutrientID)))
+						.filter(([, v]) => ALLOWED_NUTR_IDS.has(Number(v?.NutrientID)))
 						.map(([k, v]) => {
 							const issues = formatIssues(v);
 							return (
