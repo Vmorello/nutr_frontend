@@ -39,7 +39,6 @@ export async function POST(req: Request) {
 				const parsed = JSON.parse(text);
 				return NextResponse.json(parsed, { status: 200 });
 			} catch (parseErr) {
-				// If parsing fails, return the raw text with content-type preserved
 				console.warn('Failed to parse upstream JSON, returning raw text', parseErr);
 				return new Response(text, { status: 200, headers: { 'content-type': contentType } });
 			}
@@ -47,7 +46,7 @@ export async function POST(req: Request) {
 
 		// Non-JSON response: return raw text and preserve content-type
 		return new Response(text, { status: 200, headers: { 'content-type': contentType } });
-	} catch (err: any) {
-		return new Response(err?.message ?? String(err), { status: 500 });
+	} catch (err: unknown) {
+		return new Response(err instanceof Error ? err.message : String(err), { status: 500 });
 	}
 }

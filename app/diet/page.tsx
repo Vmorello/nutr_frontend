@@ -3,17 +3,59 @@ import React, { useEffect, useState } from 'react';
 import FilterRow from '../../components/FilterRow';
 import { createClient } from '@/lib/supabase/client';
 
-type NutrsTotals = Record<string, any> | null;
+// --- types to avoid `any` ---
+type NutrientValue = string | number | null | undefined;
+
+export interface NutrientRow {
+	// common fields used in the UI / CSV
+	NutrientID?: number | string;
+	NutrientName?: string;
+	total?: number | string;
+	seen_in?: number | string;
+	highest_value?: number | string;
+	highest_id?: number | string;
+	issue_w?: string | number;
+	issue_m?: string | number;
+	WomanMin?: number | string;
+	WomanMax?: number | string;
+	ManMin?: number | string;
+	ManMax?: number | string;
+	// allow additional fields by key
+	[key: string]: NutrientValue;
+}
+
+type NutrsTotals = Record<string, NutrientRow> | null;
+
+type FoodSearchItem = {
+	FoodDescription: string;
+	FoodID: string;
+};
+
+type ConvOption = {
+	MeasureID: string;
+	ConversionFactorValue?: number;
+	MeasurementName: { MeasureDescription?: string } ;
+};
+
+type FilterItem = {
+	id: string;
+	foodId?: string;
+	foodName: string;
+	measurement?: string;
+	quantity: number;
+	measurementOptions: ConvOption[];
+};
+// --- end types ---
 
 export default function DietPage() {
-    const supabase = createClient()
+	const supabase = createClient();
 
 	const [nutrsTotals, setNutrsTotals] = useState<NutrsTotals>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	// --- new search state ---
 	const [searchTerm, setSearchTerm] = useState('');
-	const [searchResults, setSearchResults] = useState<{ FoodDescription: string; FoodID: string }[]>([]);
+	const [searchResults, setSearchResults] = useState<FoodSearchItem[]>([]);
 	const [searchLoading, setSearchLoading] = useState(false);
 	// --- end search state ---
 
@@ -26,20 +68,10 @@ export default function DietPage() {
 	};
 
 	// include foodId so fetchTotals can send the necessary identifiers
-	const [filters, setFilters] = useState(
+	const [filters, setFilters] = useState<FilterItem[]>(
 		() =>
-			[] as {
-				id: string;
-				foodId?: string;
-				foodName: string;
-				measurement?: string;
-				quantity: number;
-				measurementOptions: ConvOption[];
-			}[]
+			[] as FilterItem[]
 	);
-
-	// const addFilter = () =>
-	// 	setFilters((s) => [...s, { id: String(Date.now() + Math.random()), foodName: '', measurement: '', value: '' }]);
 
 	const removeFilter = (id: string) => setFilters((s) => s.filter((f) => f.id !== id));
 
@@ -47,14 +79,30 @@ export default function DietPage() {
 		setFilters((s) => s.map((f) => (f.id === id ? { ...f, ...next } : f)));
 	// --- end filter state ---
 
+	// helper to extract string message from unknown error
+	const extractErrorMessage = (e: unknown) => {
+		if (!e) return 'Unknown error';
+		if (typeof e === 'string') return e;
+		if (e instanceof Error) return e.message;
+		try {
+			return String(e);
+		} catch {
+			return 'Unknown error';
+		}
+	};
+
+	// small runtime type-guards
+	const isRecord = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null;
+	const isNutrTotals = (x: unknown): x is Record<string, NutrientRow> => isRecord(x);
+
 	// moved fetch logic to a component-scoped function so it can be reused
 	const fetchTotals = async () => {
 		try {
 			setError(null);
 			// build a minimal filters payload for the server
 			const payloadFilters = filters.map((f) => ({
-				foodId: f.foodId ,
-				measureId: f.measurement ,
+				foodId: f.foodId,
+				measureId: f.measurement,
 				quantity: Number(f.quantity ?? 0),
 			}));
 
@@ -63,35 +111,44 @@ export default function DietPage() {
 				headers: {
 					'Content-Type': 'application/json',
 				},
-				body: JSON.stringify({ "food_list": payloadFilters }),
+				body: JSON.stringify({ food_list: payloadFilters }),
 			});
-
-            // console.log(res)
 
 			if (!res.ok) {
 				const text = await res.text();
 				throw new Error(`Fetch error ${res.status}: ${text}`);
 			}
 
-			const data = await res.json();
-            console.log(data)
-			setNutrsTotals((data as any).nutrsTotals ?? (data as any).nutrs_totals ?? (data as any) ?? null);
-		} catch (e: any) {
-			setError(e?.message ?? String(e));
+			const data = (await res.json()) as unknown;
+
+			// try several known shapes returned by the server
+			let totals: Record<string, NutrientRow> | undefined;
+
+			if (isRecord(data)) {
+				if ('nutrsTotals' in data && isNutrTotals((data as Record<string, unknown>)['nutrsTotals'])) {
+					totals = (data as Record<string, unknown>)['nutrsTotals'] as Record<string, NutrientRow>;
+				} else if ('nutrs_totals' in data && isNutrTotals((data as Record<string, unknown>)['nutrs_totals'])) {
+					totals = (data as Record<string, unknown>)['nutrs_totals'] as Record<string, NutrientRow>;
+				} else if (isNutrTotals(data)) {
+					totals = data as Record<string, NutrientRow>;
+				}
+			}
+
+			setNutrsTotals(totals ?? null);
+		} catch (e: unknown) {
+			setError(extractErrorMessage(e));
 		}
 	};
 
 	// --- new: perform search against server route ---
 	const handleSearch = async () => {
 		const searchterm = searchTerm.trim();
-        // console.log(searchterm)
 		if (!searchterm) return;
 		try {
 			setSearchLoading(true);
 			setSearchResults([]);
 			setError(null);
 
-			// select only the columns we need and filter with ilike (case-insensitive)
 			const { data, error } = await supabase
 				.from('FoodName')
 				.select('FoodDescription,FoodID')
@@ -99,19 +156,31 @@ export default function DietPage() {
 
 			if (error) throw error;
 
-            // console.log(data)
-			// data may be null/undefined when nothing found — use empty array
-			setSearchResults(Array.isArray(data) ? data : []);
-		} catch (e: any) {
-			setError(e?.message ?? String(e));
+			if (Array.isArray(data)) {
+				// coerce each entry to FoodSearchItem where possible
+				const typed: FoodSearchItem[] = (data as unknown[]).reduce<FoodSearchItem[]>((acc, item) => {
+					if (isRecord(item)) {
+						const desc = (item as Record<string, unknown>)['FoodDescription'];
+						const id = (item as Record<string, unknown>)['FoodID'];
+						if (typeof desc === 'string' && (typeof id === 'string' || typeof id === 'number')) {
+							acc.push({ FoodDescription: desc, FoodID: String(id) });
+						}
+					}
+					return acc;
+				}, []);
+				setSearchResults(typed);
+			} else {
+				setSearchResults([]);
+			}
+		} catch (e: unknown) {
+			setError(extractErrorMessage(e));
 		} finally {
 			setSearchLoading(false);
 		}
 	};
 
 	// when a result is clicked, put the description into the first filter's value (create one if none)
-	const selectFood = async (item: { FoodDescription: string; FoodID: string }) => {
-		// fetch conversion factor rows for this FoodID, then fetch measurement names separately
+	const selectFood = async (item: FoodSearchItem) => {
 		let convOptions: ConvOption[] = [];
 		try {
 			const { data: convData, error: convError } = await supabase
@@ -122,8 +191,11 @@ export default function DietPage() {
 			if (convError) {
 				console.error('conversion fetch error', convError);
 			} else if (Array.isArray(convData) && convData.length > 0) {
-				// collect MeasureIDs then fetch their descriptions from MeasurementName
-				const ids = convData.map((c: any) => c.MeasureID).filter(Boolean);
+				const ids = convData
+					.map((c) => (isRecord(c) ? (c['MeasureID'] ?? undefined) : undefined))
+					.filter((v): v is string | number => typeof v === 'string' || typeof v === 'number')
+					.map(String);
+
 				let nameMap: Record<string, string> = {};
 
 				if (ids.length > 0) {
@@ -136,24 +208,39 @@ export default function DietPage() {
 						console.error('measurement names fetch error', namesError);
 					} else if (Array.isArray(namesData)) {
 						for (const nd of namesData) {
-							if (nd?.MeasureID != null) nameMap[String(nd.MeasureID)] = nd.MeasureDescription ?? '';
+							if (isRecord(nd)) {
+								const mid = nd['MeasureID'];
+								const desc = nd['MeasureDescription'];
+								if ((typeof mid === 'string' || typeof mid === 'number') && typeof desc === 'string') {
+									nameMap[String(mid)] = desc;
+								}
+							}
 						}
 					}
 				}
 
-				convOptions = convData.map((c: any) => ({
-					MeasureID: String(c.MeasureID),
-					ConversionFactorValue: c.ConversionFactorValue != null ? Number(c.ConversionFactorValue) : undefined,
-					MeasurementName: { MeasureDescription: nameMap[String(c.MeasureID)] ?? undefined },
-				}));
+				convOptions = convData.reduce<ConvOption[]>((acc, c) => {
+					if (isRecord(c)) {
+						const mid = c['MeasureID'];
+						const cf = c['ConversionFactorValue'];
+						if ((typeof mid === 'string' || typeof mid === 'number')) {
+							acc.push({
+								MeasureID: String(mid),
+								ConversionFactorValue: typeof cf === 'number' ? cf : cf == null ? undefined : Number(cf),
+								MeasurementName: { MeasureDescription: nameMap[String(mid)] ?? undefined },
+							});
+						}
+					}
+					return acc;
+				}, []);
 			}
 		} catch (e) {
 			console.error('selectFood error', e);
 		}
 
-		const newFilter = {
+		const newFilter: FilterItem = {
 			id: String(Date.now()) + '_' + item.FoodID,
-			foodId: String(item.FoodID), // <-- store FoodID explicitly
+			foodId: String(item.FoodID),
 			foodName: item.FoodDescription,
 			measurement: convOptions.length > 0 ? convOptions[0].MeasureID : undefined,
 			quantity: 1,
@@ -165,10 +252,10 @@ export default function DietPage() {
 			next.push(newFilter);
 			return next;
 		});
- 		// clear search results after selection
- 		setSearchResults([]);
- 		setSearchTerm('');
- 	};
+		// clear search results after selection
+		setSearchResults([]);
+		setSearchTerm('');
+	};
 	// --- end search helpers ---
 
 	useEffect(() => {
@@ -183,7 +270,7 @@ export default function DietPage() {
 	// --- added: CSV generation & download helper ---
 	const CSV_FIELDS = ['NutrientID', 'NutrientName', 'WomanMin', 'WomanMax', 'ManMin', 'ManMax', 'total', 'seen_in', 'highest_value', 'highest_id', 'issue_w', 'issue_m'];
 
-	const escapeCsv = (val: any) => {
+	const escapeCsv = (val: unknown) => {
 		if (val == null) return '';
 		const s = String(val);
 		return `"${s.replace(/"/g, '""')}"`;
@@ -191,19 +278,18 @@ export default function DietPage() {
 
 	const filteredRows = () =>
 		nutrsTotals
-			? Object.values(nutrsTotals).filter((v: any) => ALLOWED_NUTR_IDS.has(Number(v?.NutrientID)))
+			? Object.values(nutrsTotals).filter((v) => ALLOWED_NUTR_IDS.has(Number(v?.NutrientID)))
 			: [];
 
 	const handleDownloadCsv = () => {
 		const rows = filteredRows();
 		if (!rows || rows.length === 0) return;
 
-		const csvLines = rows.map((v: any) =>
+		const csvLines = rows.map((v) =>
 			CSV_FIELDS
 				.map((f) => {
-					// try common key forms: exact, lowercase
-					const val = v?.[f] ?? v?.[f.toLowerCase()] ?? '';
-					return escapeCsv(val);
+					const rv = (v as Record<string, unknown>)[f] ?? (v as Record<string, unknown>)[f.toLowerCase()];
+					return escapeCsv(rv);
 				})
 				.join(',')
 		);
@@ -224,18 +310,18 @@ export default function DietPage() {
 	// --- end CSV helper ---
 
 	// --- added: helpers to read/format issue fields ---
-	const readField = (obj: any, key: string) => {
-		if (!obj) return undefined;
-		// try exact, lowercase, and camelCase
-		return obj[key] ?? obj[key.toLowerCase()] ?? obj[key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+	const readField = (obj: unknown, key: string): unknown => {
+		if (!isRecord(obj)) return undefined;
+		const r = obj[key] ?? obj[key.toLowerCase()] ?? obj[key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())];
+		return r;
 	};
 
-	const formatIssues = (v: any) => {
+	const formatIssues = (v: NutrientRow) => {
 		const iw = readField(v, 'issue_w');
 		const im = readField(v, 'issue_m');
 		const parts: string[] = [];
-		if (iw != null && String(iw).trim() !== '') parts.push(`w:${iw}`);
-		if (im != null && String(im).trim() !== '') parts.push(`m:${im}`);
+		if (iw != null && String(iw).trim() !== '') parts.push(`w:${String(iw)}`);
+		if (im != null && String(im).trim() !== '') parts.push(`m:${String(im)}`);
 		return parts.length ? parts.join(' | ') : null;
 	};
 	// --- end helpers ---
