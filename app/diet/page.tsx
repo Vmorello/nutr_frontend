@@ -264,7 +264,7 @@ export default function DietPage() {
 
 	// Allowed nutrient IDs to display
 	const ALLOWED_NUTR_IDS = new Set<number>([
-		416,301,205,208,204,831,825,291,303,304,315,410,305,306,203,319,405,317,307,404,406,418,415,401,324,430,309,815,323,605,606
+		416,301,205,208,204,814, 831,825,291,303,304,315,410,305,306,203,319,405,317,307,404,406,418,415,401,324,430,309,815,323,605,606
 	]);
 
 	// --- added: CSV generation & download helper ---
@@ -295,7 +295,25 @@ export default function DietPage() {
 		);
 
 		const header = CSV_FIELDS.join(',');
-		const csv = [header, ...csvLines].join('\r\n');
+		const csvSections: string[] = [header, ...csvLines];
+
+		if (filters && filters.length > 0) {
+			csvSections.push(''); // blank line separator
+			csvSections.push('Selected Filters:');
+			csvSections.push('Food,Quantity,Measurement');
+			for (const f of filters) {
+				const measureLabel =
+					(f.measurementOptions ?? []).find((o) => o.MeasureID === f.measurement)?.MeasurementName?.MeasureDescription ??
+					f.measurement ?? '';
+				csvSections.push([
+					escapeCsv(f.foodName ?? ''),
+					escapeCsv(f.quantity),
+					escapeCsv(measureLabel),
+				].join(','));
+			}
+		}
+
+		const csv = csvSections.join('\r\n');
 
 		const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
 		const url = URL.createObjectURL(blob);
