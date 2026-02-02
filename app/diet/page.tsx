@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import FilterRow from '../../components/FilterRow';
 import { createClient } from '@/lib/supabase/client';
+import { Flag } from 'lucide-react';
 
 // --- types to avoid `any` ---
 type NutrientValue = string | number | null | undefined;
@@ -34,10 +35,10 @@ type FoodSearchItem = {
 type ConvOption = {
 	MeasureID: string;
 	ConversionFactorValue?: number;
-	MeasurementName: { MeasureDescription?: string } ;
+	MeasurementName: { MeasureDescription?: string };
 };
 
-type FilterItem = {
+type FoodItem = {
 	id: string;
 	foodId?: string;
 	foodName: string;
@@ -52,6 +53,13 @@ export default function DietPage() {
 
 	const [nutrsTotals, setNutrsTotals] = useState<NutrsTotals>(null);
 	const [error, setError] = useState<string | null>(null);
+
+	const [saveName, setSaveName] = useState<string>("Unsaved");
+
+	// saved files from Supabase `save_file` table
+	const [saves, setSaves] = useState<Array<{ id: string; label: string }>>([]);
+	const [loadingSaves, setLoadingSaves] = useState(false);
+	const [loaded, setLoaded] = useState<{ flag: boolean; uuid: string | null }>({ flag: false, uuid: null });
 
 	// --- new search state ---
 	const [searchTerm, setSearchTerm] = useState('');
@@ -68,14 +76,13 @@ export default function DietPage() {
 	};
 
 	// include foodId so fetchTotals can send the necessary identifiers
-	const [filters, setFilters] = useState<FilterItem[]>(
-		() =>
-			[] as FilterItem[]
+	const [filters, setFilters] = useState<FoodItem[]>(
+			[] as FoodItem[]
 	);
 
 	const removeFilter = (id: string) => setFilters((s) => s.filter((f) => f.id !== id));
 
-	const updateFilter = (id: string, next: Partial<{ id: string; field: string; measurement: string; quantity: number }>) =>
+	const updateFilter = (id: string, next: Partial<FoodItem>) =>
 		setFilters((s) => s.map((f) => (f.id === id ? { ...f, ...next } : f)));
 	// --- end filter state ---
 
@@ -140,6 +147,72 @@ export default function DietPage() {
 		}
 	};
 
+	// stub to save the current entry to the `save_file` table
+	const saveEntry = async () => {
+		try {
+			console.log('starting save');
+			// placeholder payload — include whatever you want to save
+			let payload
+			if (loaded.flag) {
+				payload = {
+					id: loaded.uuid,
+					user: (await supabase.auth.getUser()).data.user?.id,
+					readable_name: saveName,
+				}
+			} else {
+				payload = {
+					user: (await supabase.auth.getUser()).data.user?.id,
+					readable_name: saveName,
+				}
+			}
+
+			const { data, error } = await supabase
+				.from('save_file')
+				.upsert(payload)
+				.select("id")
+
+			
+
+			console.log('saved payload', data);
+
+			const save_id = data![0].id;
+
+			// write one entry row per active filter into `entries`
+			try {
+				// if updating an existing save, remove prior lines for that save
+				if (loaded.flag) {
+					const { error: delError } = await supabase.from('entries').delete().eq('save_id', save_id);
+					if (delError) console.error('delete entries error', delError);
+				}
+
+				const rows = filters.map((f) => ({
+					save_id,
+					food_id: f.foodId ?? null,
+					food_description: f.foodName ?? null,
+					amount: f.quantity,
+					measure_index: (f.measurementOptions ?? []).findIndex((o) => o.MeasureID === f.measurement),
+				}));
+
+				if (rows.length > 0) {
+					const { data: inserted, error: insertError } = await supabase.from('entries').insert(rows).select('id');
+					if (insertError) console.error('insert entries error', insertError);
+					else console.log('inserted entries', inserted);
+				}
+			} catch (e) {
+				console.error('saving entries error', e);
+			}
+
+			// Example of intended action (commented):
+			// await supabase.from('save_file').insert([{ ...payload }]);
+			if(!loaded.flag){
+				fetchSaves()
+			}
+			setLoaded({ flag: true, uuid: data![0].id })
+		} catch (e) {
+			console.error('saveEntry error', e);
+		}
+	};
+
 	// --- new: perform search against server route ---
 	const handleSearch = async () => {
 		const searchterm = searchTerm.trim();
@@ -180,7 +253,7 @@ export default function DietPage() {
 	};
 
 	// when a result is clicked, put the description into the first filter's value (create one if none)
-	const selectFood = async (item: FoodSearchItem) => {
+	const selectFood = async (item: FoodSearchItem, quantity:number = 1, convIndex:number = 0) => {
 		let convOptions: ConvOption[] = [];
 		try {
 			const { data: convData, error: convError } = await supabase
@@ -238,12 +311,12 @@ export default function DietPage() {
 			console.error('selectFood error', e);
 		}
 
-		const newFilter: FilterItem = {
+		const newFilter: FoodItem = {
 			id: String(Date.now()) + '_' + item.FoodID,
 			foodId: String(item.FoodID),
 			foodName: item.FoodDescription,
-			measurement: convOptions.length > 0 ? convOptions[0].MeasureID : undefined,
-			quantity: 1,
+			measurement:  convOptions[convIndex].MeasureID ,
+			quantity: quantity,
 			measurementOptions: convOptions,
 		};
 
@@ -258,13 +331,160 @@ export default function DietPage() {
 	};
 	// --- end search helpers ---
 
+	// fetch saved entries from `save_file` table and map to {id,label}
+	const fetchSaves = async () => {
+		try {
+			setLoadingSaves(true);
+			const { data, error } = await supabase.from('save_file').select('*');
+			if (error) throw error;
+			if (Array.isArray(data)) {
+				const mapped = data
+					.map((r) => {
+						const idRaw = r['id'] as string;
+						const labelRaw = r['readable_name'] as string;
+						return { id:idRaw, label: labelRaw };
+					})
+				setSaves(mapped);
+				// setSaveName( mapped[0].label );
+			}
+		} catch (e) {
+			console.error('fetchSaves error', e);
+		} finally {
+			setLoadingSaves(false);
+		}
+	};
+
+	const loadSave = async (id: string) => {
+		try {
+			setLoadingSaves(true);
+			setError(null);
+
+			// fetch save meta (readable name)
+			const { data: saveMeta, error: saveMetaError } = await supabase
+				.from('save_file')
+				.select('readable_name')
+				.eq('id', id)
+				.single();
+
+			if (saveMetaError) console.error('loadSave save_file error', saveMetaError);
+			if (isRecord(saveMeta) && typeof saveMeta['readable_name'] === 'string') {
+				setSaveName(saveMeta['readable_name']);
+			}
+
+			// fetch saved lines for this save
+			const { data: rows, error: rowsError } = await supabase
+				.from('entries')
+				.select('food_id,food_description,amount,measure_index')
+				.eq('save_id', id)
+				.order('id', { ascending: true });
+
+			if (rowsError) throw rowsError;
+
+			const nextFilters: FoodItem[] = [];
+
+			if (Array.isArray(rows)) {
+				for (const r of rows) {
+					if (!isRecord(r)) continue;
+
+					const foodId = r['food_id'] == null ? undefined : String(r['food_id']);
+					const foodDescription = typeof r['food_description'] === 'string' ? r['food_description'] : '';
+					const quantity = Number(r['amount'] ?? 0);
+					const measureIndexRaw = r['measure_index'];
+
+					// fetch conversion options for this food
+					let convOptions: ConvOption[] = [];
+					try {
+						const { data: convData, error: convError } = await supabase
+							.from('ConcersionFactor')
+							.select('MeasureID,ConversionFactorValue')
+							.eq('FoodID', foodId as string);
+
+						if (convError) {
+							console.error('conversion fetch error', convError);
+						} else if (Array.isArray(convData) && convData.length > 0) {
+							const ids = convData
+								.map((c) => (isRecord(c) ? (c['MeasureID'] ?? undefined) : undefined))
+								.filter((v): v is string | number => typeof v === 'string' || typeof v === 'number')
+								.map(String);
+
+							const nameMap: Record<string, string> = {};
+							if (ids.length > 0) {
+								const { data: namesData, error: namesError } = await supabase
+									.from('MeasurementName')
+									.select('MeasureID,MeasureDescription')
+									.in('MeasureID', ids);
+
+								if (namesError) {
+									console.error('measurement names fetch error', namesError);
+								} else if (Array.isArray(namesData)) {
+									for (const nd of namesData) {
+										if (isRecord(nd)) {
+											const mid = nd['MeasureID'];
+											const desc = nd['MeasureDescription'];
+											if ((typeof mid === 'string' || typeof mid === 'number') && typeof desc === 'string') {
+												nameMap[String(mid)] = desc;
+											}
+										}
+									}
+								}
+							}
+
+							convOptions = convData.reduce<ConvOption[]>((acc, c) => {
+								if (isRecord(c)) {
+									const mid = c['MeasureID'];
+									const cf = c['ConversionFactorValue'];
+									if ((typeof mid === 'string' || typeof mid === 'number')) {
+										acc.push({
+											MeasureID: String(mid),
+											ConversionFactorValue: typeof cf === 'number' ? cf : cf == null ? undefined : Number(cf),
+											MeasurementName: { MeasureDescription: nameMap[String(mid)] ?? undefined },
+										});
+									}
+								}
+								return acc;
+							}, []);
+						}
+					} catch (e) {
+						console.error('loadSave conversion error', e);
+					}
+
+					const measurement = (typeof measureIndexRaw === 'number' && measureIndexRaw >= 0 && convOptions[measureIndexRaw])
+						? convOptions[measureIndexRaw].MeasureID
+						: convOptions.length > 0
+							? convOptions[0].MeasureID
+							: undefined;
+
+					nextFilters.push({
+						id: String(Date.now()) + '_' + (foodId ?? Math.random()),
+						foodId: foodId,
+						foodName: foodDescription,
+						measurement,
+						quantity,
+						measurementOptions: convOptions,
+					});
+				}
+			}
+
+			setFilters(nextFilters);
+			setLoaded({ flag: true, uuid: id });
+		} catch (e) {
+			console.error('loadSave error', e);
+		} finally {
+			setLoadingSaves(false);
+		}
+	};
+
+	useEffect(() => {
+		fetchSaves();
+	}, []);
+
 	useEffect(() => {
 		fetchTotals();
 	}, []);
 
 	// Allowed nutrient IDs to display
 	const ALLOWED_NUTR_IDS = new Set<number>([
-		416,301,205,208,204,814, 831,825,291,303,304,315,410,305,306,203,319,405,317,307,404,406,418,415,401,324,430,309,815,323,605,606
+		416, 301, 205, 208, 204, 814, 831, 825, 291, 303, 304, 315, 410, 305, 306, 203, 319, 405, 317, 307, 404, 406, 418, 415, 401, 324, 430, 309, 815, 323, 605, 606
 	]);
 
 	// --- added: CSV generation & download helper ---
@@ -346,6 +566,45 @@ export default function DietPage() {
 
 	return (
 		<div>
+
+			{/* Saved files dropdown (populated from `save_file`) */}
+			<div className="mt-2">
+				{loadingSaves ? (
+					<span>Loading saves...</span>
+				) : (
+					<select
+						value={loaded.flag && loaded.uuid ? loaded.uuid : 'Unsaved'}
+						onChange={(e) => {
+							const selId = e.target.value;
+							if (selId === 'Unsaved') {
+								setSaveName('Unsaved');
+								setLoaded({ flag: false, uuid: null });
+							} else {
+								const found = saves.find((x) => x.id === selId);
+								if (found) setSaveName(found.label);
+								setLoaded({ flag: false, uuid: selId });
+								// loadSave will set loaded.flag=true when complete
+								loadSave(selId);
+							}
+						}}
+						className="px-3 py-2 border rounded"
+					>
+						<option key="blank" value="Unsaved">Unsaved</option>
+						{saves.map((s) => (
+							<option key={s.id} value={s.id}>
+								{s.label}
+							</option>
+						))}
+					</select>
+				)}
+				<input
+					type="text"
+					value={saveName}
+					onChange={(e) => setSaveName(e.target.value)}
+					className="flex-1 px-3 py-2 border rounded"
+				/>
+			</div>
+
 			<h1>Diet — Nutrient Totals</h1>
 
 			{/* Search bar (above filters) */}
@@ -397,10 +656,13 @@ export default function DietPage() {
 
 			{/* Refresh button placed before the loading/content area */}
 			<button
-				onClick={() => fetchTotals()}
+				onClick={async () => {
+					await saveEntry();
+					await fetchTotals();
+				}}
 				className="mb-3 border border-gray-300 rounded px-3 py-1 hover:bg-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-200"
 			>
-				Send & recalculate
+				Save & Recalculate
 			</button>
 
 			{error && <div style={{ color: 'red' }}>{error}</div>}
