@@ -2,7 +2,6 @@
 import React, { useEffect, useState } from 'react';
 import FilterRow from '../../components/FilterRow';
 import { createClient } from '@/lib/supabase/client';
-import { Flag } from 'lucide-react';
 
 // --- types to avoid `any` ---
 type NutrientValue = string | number | null | undefined;
@@ -173,6 +172,7 @@ export default function DietPage() {
 
 			
 
+			if (error) throw error;
 			console.log('saved payload', data);
 
 			const save_id = data![0].id;
@@ -474,10 +474,12 @@ export default function DietPage() {
 		}
 	};
 
+	// eslint-disable-next-line react-hooks/exhaustive-deps
 	useEffect(() => {
 		fetchSaves();
 	}, []);
 
+	// eslint-disable-next-line react-hooks/exhaustive-deps
 	useEffect(() => {
 		fetchTotals();
 	}, []);
